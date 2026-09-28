@@ -15,3 +15,7 @@ Interview line: "I run the datastores in Compose so I can wipe and rebuild the e
 ## Step 6: seed data
 Seeded 10,000 users, about 2 million follows (200 random picks per user, so roughly 199 after dedupe) and 1,000,000 tweets over the last 30 days, using Postgres generate_series instead of PHP factories. Everyone follows user 1, who becomes the celebrity account for the hot-key lab.
 Interview line: "I generated the data set inside Postgres, so a million rows took seconds instead of minutes."
+
+## Step 7: timeline endpoint, no cache
+Built GET /api/users/{id}/timeline: 20 newest tweets from followed accounts, via a join on follows. Route lives in api.php (no session middleware) so timings measure the query, not session overhead. Baseline for user 2: first two requests 139ms/179ms (cold), then steady at 36ms once warm. This is the number every cache strategy has to beat.
+Interview line: "I measured the uncached baseline first, with session middleware excluded, so every cache win I report later is real and not noise."
