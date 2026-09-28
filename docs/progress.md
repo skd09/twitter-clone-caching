@@ -19,3 +19,7 @@ Interview line: "I generated the data set inside Postgres, so a million rows too
 ## Step 7: timeline endpoint, no cache
 Built GET /api/users/{id}/timeline: 20 newest tweets from followed accounts, via a join on follows. Route lives in api.php (no session middleware) so timings measure the query, not session overhead. Baseline for user 2: first two requests 139ms/179ms (cold), then steady at 36ms once warm. This is the number every cache strategy has to beat.
 Interview line: "I measured the uncached baseline first, with session middleware excluded, so every cache win I report later is real and not noise."
+
+## Step 8: real baseline load test (Octane + RoadRunner)
+php artisan serve (single process) was misleading: 20 concurrent VUs queued behind each other, med=627ms, only 31 req/s. Switched to Laravel Octane with RoadRunner (Swoole failed to compile against this macOS/Clang setup - a known upstream bug, not a config issue). With Octane serving real concurrency: p50=128ms, p90=190ms, p95=220ms, max=418ms, 125 req/s, 0% errors, over 20 VUs / 50s / random user IDs 1-9999. This is the official "no cache" baseline every later lab is measured against.
+Interview line: "My first load test lied to me, because a single-process dev server queues requests instead of running them concurrently. I caught it by checking min vs p90 spread, not just the average."
