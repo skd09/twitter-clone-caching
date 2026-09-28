@@ -2,25 +2,59 @@
 
 :root {
   --background: #ffffff;
-  --foreground: #171717;
+  --foreground: #0f1419;
+  --muted: #536471;
+  --line: #eff3f4;
+  --hover: #f7f9f9;
+  --elevated: #f7f9f9;
+  --accent: #1d9bf0;
+  --accent-hover: #1a8cd8;
+  --accent-soft: #e8f5fd;
+  --like: #f91880;
+  --like-soft: #fce8f3;
+  --repost: #00ba7c;
+  --repost-soft: #e3f7ef;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --background: #000000;
+    --foreground: #e7e9ea;
+    --muted: #71767b;
+    --line: #2f3336;
+    --hover: #080808;
+    --elevated: #16181c;
+    --accent: #1d9bf0;
+    --accent-hover: #1a8cd8;
+    --accent-soft: #10273b;
+    --like: #f91880;
+    --like-soft: #2b0a1b;
+    --repost: #00ba7c;
+    --repost-soft: #0a2018;
+  }
 }
 
 @theme inline {
   --color-background: var(--background);
   --color-foreground: var(--foreground);
+  --color-muted: var(--muted);
+  --color-line: var(--line);
+  --color-hover: var(--hover);
+  --color-elevated: var(--elevated);
+  --color-accent: var(--accent);
+  --color-accent-hover: var(--accent-hover);
+  --color-accent-soft: var(--accent-soft);
+  --color-like: var(--like);
+  --color-like-soft: var(--like-soft);
+  --color-repost: var(--repost);
+  --color-repost-soft: var(--repost-soft);
   --font-sans: var(--font-geist-sans);
   --font-mono: var(--font-geist-mono);
-}
-
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
 }
 
 body {
   background: var(--background);
   color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+  font-family: var(--font-geist-sans), system-ui, -apple-system, "Segoe UI",
+    Roboto, Helvetica, Arial, sans-serif;
 }
