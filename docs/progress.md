@@ -23,3 +23,10 @@ Interview line: "I measured the uncached baseline first, with session middleware
 ## Step 8: real baseline load test (Octane + RoadRunner)
 php artisan serve (single process) was misleading: 20 concurrent VUs queued behind each other, med=627ms, only 31 req/s. Switched to Laravel Octane with RoadRunner (Swoole failed to compile against this macOS/Clang setup - a known upstream bug, not a config issue). With Octane serving real concurrency: p50=128ms, p90=190ms, p95=220ms, max=418ms, 125 req/s, 0% errors, over 20 VUs / 50s / random user IDs 1-9999. This is the official "no cache" baseline every later lab is measured against.
 Interview line: "My first load test lied to me, because a single-process dev server queues requests instead of running them concurrently. I caught it by checking min vs p90 spread, not just the average."
+
+## Lab 2: cache-aside
+Wrapped the timeline query in Cache::remember (key: timeline:{userId}, TTL 60s). Debugging note: spent significant time chasing false leads (Octane worker state, PHP version mismatch, igbinary serialization) before finding the real bug — a leftover key name typo (timer: instead of timeline:) meant the cache was silently missing the whole time. Lesson: verify the actual key name in Redis before theorizing about deeper causes.
+Results against the Step 8 baseline (p50=128ms, p90=190ms, p95=220ms, 125 req/s):
+- Uniform random traffic (k6 baseline.js, IDs 1-9999): p50=82ms, p90=154ms, p95=175ms, 194 req/s. Modest gain — most requests are still first-time misses since 9999 IDs barely repeat within one run.
+- Skewed traffic (k6 skewed.js, 80% of requests hit a 50-ID pool): p50=13ms, p90=62ms, p95=88ms, 681 req/s. A ~90% drop in p50 and 5.4x throughput, same code, same 20 VUs — traffic locality is what makes cache-aside pay off, not the cache itself.
+Interview line: "Cache-aside is a bet that the same key gets requested again before it expires. I measured it under both uniform and skewed traffic to show the payoff depends entirely on locality, not on the caching code."
