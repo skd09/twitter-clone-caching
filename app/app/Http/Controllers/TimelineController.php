@@ -5,6 +5,7 @@ namespace App\Http\Controllers;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Cache;
+use Illuminate\Support\Facades\Log;
 use App\Caching\HotKeyDetector;
 
 class TimelineController extends Controller
@@ -21,6 +22,9 @@ class TimelineController extends Controller
             "timeline:{$userId}",
             $ttl,
             function () use ($userId) {
+
+                Log::info("DB QUERY RAN for user {$userId}");
+
                 return DB::table('tweets')
                     ->join('follows', 'follows.followed_id', '=', 'tweets.user_id')
                     ->where('follows.follower_id', $userId)
