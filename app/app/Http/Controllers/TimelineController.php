@@ -12,7 +12,7 @@ class TimelineController extends Controller
     {
         $tweets = Cache::remember(
             "timeline:{$userId}",
-            now()->addSeconds(60),
+            now()->addSeconds(10 + random_int(0, 5)),
             function () use ($userId) {
                 return DB::table('tweets')
                     ->join('follows', 'follows.followed_id', '=', 'tweets.user_id')
