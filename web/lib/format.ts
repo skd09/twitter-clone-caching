@@ -27,9 +27,22 @@ export function avatarTint(userId: number): string {
   return AVATAR_TINTS[userId % AVATAR_TINTS.length];
 }
 
+/**
+ * Laravel serialises timestamps as "YYYY-MM-DD HH:MM:SS" in UTC (config/app.php
+ * sets timezone => UTC) with no offset marker. A browser parses that shape as
+ * *local* time, which shifts every timestamp by the viewer's UTC offset. Pin it
+ * to UTC explicitly instead of trusting the engine's fallback parsing.
+ */
+export function parseApiDate(value: string): Date {
+  const match = /^(\d{4}-\d{2}-\d{2})[ T](\d{2}:\d{2}:\d{2})(\.\d+)?$/.exec(
+    value.trim()
+  );
+  return new Date(match ? `${match[1]}T${match[2]}Z` : value);
+}
+
 /** Twitter-style: 45s -> "45s", 20m -> "20m", 5h -> "5h", older -> "Sep 28". */
 export function relativeTime(iso: string, now: Date = new Date()): string {
-  const then = new Date(iso);
+  const then = parseApiDate(iso);
   if (Number.isNaN(then.getTime())) return '';
 
   const seconds = Math.floor((now.getTime() - then.getTime()) / 1000);

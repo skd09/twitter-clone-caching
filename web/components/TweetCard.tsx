@@ -15,6 +15,7 @@ import {
   displayName,
   handle,
   initials,
+  parseApiDate,
   relativeTime,
 } from '@/lib/format';
 
@@ -43,8 +44,8 @@ export default function TweetCard({ tweet, liked, onLike }: Props) {
           <span className="text-muted truncate">{handle(tweet.user_id)}</span>
           <span className="text-muted">·</span>
           <time
-            dateTime={tweet.created_at}
-            title={new Date(tweet.created_at).toLocaleString()}
+            dateTime={parseApiDate(tweet.created_at).toISOString()}
+            title={parseApiDate(tweet.created_at).toLocaleString()}
             className="text-muted hover:underline shrink-0"
           >
             {relativeTime(tweet.created_at)}
