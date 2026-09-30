@@ -4,6 +4,7 @@ namespace App\Http\Controllers;
 
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Redis;
 
@@ -43,6 +44,25 @@ class TweetController extends Controller
         Cache::put("tweet:{$tweetId}:likes", $newCount, 3600);
 
         return response()->json(['tweet_id' => $tweetId, 'like_count' => $newCount]);
+    }
+
+    public function readLikesSlow(int $tweetId)
+    {
+        // Simulate a slow read: fetch from DB, but pause before caching
+        // to widen the race window on purpose.
+        $count = DB::table('tweets')
+            ->where('id', $tweetId)
+            ->value('like_count');
+        
+        Log::info("SLOW READ fetched {$count} for tweet {$tweetId}, about to sleep...");
+
+        sleep(3); // Simulate a slow read
+
+        Cache::put("tweet:{$tweetId}:likes", $count, 3600);
+
+        Log::info("SLOW READ wrote {$count} into cache for tweet {$tweetId}");
+
+        return response()->json(['tweet_id' => $tweetId, 'like_count' => $count]);
     }
 
     public function likeBuffered(int $tweetId)

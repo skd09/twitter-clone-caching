@@ -13,3 +13,5 @@ Route::get('/users/{userId}/timeline', [TimelineController::class, 'show']);
 
 Route::post('/tweets/{tweetId}/like', [\App\Http\Controllers\TweetController::class, 'like']);
 Route::post('/tweets/{tweetId}/like-buffered', [TweetController::class, 'likeBuffered']);
+Route::get('/tweets/{tweetId}/read-slow', [TweetController::class, 'readLikesSlow']);
+
