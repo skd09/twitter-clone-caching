@@ -37,32 +37,46 @@ class TweetController extends Controller
             ->where('id', $tweetId)
             ->increment('like_count');
         
-        $newCount = DB::table('tweets')
+        $row = DB::table('tweets')
             ->where('id', $tweetId)
-            ->value('like_count');
-        
-        Cache::put("tweet:{$tweetId}:likes", $newCount, 3600);
+            ->first(['like_count', 'update_at']);
 
-        return response()->json(['tweet_id' => $tweetId, 'like_count' => $newCount]);
+        $this->writeIfNewer($tweetId, $row->like_count, strtotime($row->updated_at));
+
+        return response()->json(['tweet_id' => $tweetId, 'like_count' => $row->like_count]);
     }
 
     public function readLikesSlow(int $tweetId)
     {
-        // Simulate a slow read: fetch from DB, but pause before caching
-        // to widen the race window on purpose.
-        $count = DB::table('tweets')
-            ->where('id', $tweetId)
-            ->value('like_count');
-        
-        Log::info("SLOW READ fetched {$count} for tweet {$tweetId}, about to sleep...");
+        $row = DB::table('tweets')->where('id', $tweetId)->first(['like_count', 'updated_at']);
+
+        Log::info("SLOW READ fetched {$row->like_count} (version " . strtotime($row->updated_at) . ") for tweet {$tweetId}, about to sleep...");
 
         sleep(3); // Simulate a slow read
 
+        $wrote = $this->writeIfNewer($tweetId, $row->like_count, strtotime($row->updated_at));
+
+        Log::info(
+            $wrote
+                ? "SLOW READ wrote {$row->like_count} into cache for tweet {$tweetId}"
+                : "SLOW READ SKIPPED writing stale {$row->like_count} — a newer version was already cached"
+        );
+        return response()->json(['tweet_id' => $tweetId, 'attempted_count' => $row->like_count, 'actually_wrote' => $wrote]);
+    }
+
+    private function writeIfNewer(int $tweetId, int $count, int $version): bool 
+    {
+        $versionKey = "tweet:{$tweetId}:likes:version";
+        $currentVersion = Cache::get($versionKey, 0);
+
+        if($version <= $currentVersion)
+        {
+            return false; // our data is stale or equal — refuse to overwrite
+        }
         Cache::put("tweet:{$tweetId}:likes", $count, 3600);
+        Cache::put($versionKey, $version, 3600);
 
-        Log::info("SLOW READ wrote {$count} into cache for tweet {$tweetId}");
-
-        return response()->json(['tweet_id' => $tweetId, 'like_count' => $count]);
+        return true;
     }
 
     public function likeBuffered(int $tweetId)
