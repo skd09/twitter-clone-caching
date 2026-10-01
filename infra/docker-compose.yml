@@ -17,5 +17,11 @@ services:
     ports:
       - "6380:6379"
 
+  redis-hot:
+    image: redis:7
+    container_name: tcc-redis-hot
+    ports:
+      - "6381:6379"
+
 volumes:
   pgdata:

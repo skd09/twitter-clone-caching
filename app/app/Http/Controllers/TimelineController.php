@@ -7,33 +7,53 @@ use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Log;
 use App\Caching\HotKeyDetector;
+use Illuminate\Support\Facades\Redis;
 
 class TimelineController extends Controller
 {
     public function show(int $userId, HotKeyDetector $detector)
     {
         $isHot = $detector->recordAccess("timeline:{$userId}");
-
-        $ttl = $isHot
-            ? now()->addSeconds(10 + random_int(0, 15))   // hot: wide jitter, short base
-            : now()->addSeconds(60);                        // cold: long, stable, no jitter needed
-
         $cacheKey = "timeline:{$userId}";
 
-        $tweets = Cache::lock("lock:{$cacheKey}", 5)->block(3, function () use ($cacheKey, $userId, $ttl) {
+        $ttl = $isHot
+            ? (10 + random_int(0, 15))   // hot: wide jitter, short base
+            : 60;                        // cold: long, stable, no jitter needed
 
-            return Cache::remember($cacheKey, $ttl, function () use ($userId) {
-                Log::info("DB QUERY RAN for user {$userId}");
-
-                return DB::table('tweets')
-                    ->join('follows', 'follows.followed_id', '=', 'tweets.user_id')
-                    ->where('follows.follower_id', $userId)
-                    ->orderByDesc('tweets.created_at')
-                    ->limit(20)
-                    ->get(['tweets.id', 'tweets.user_id', 'tweets.body', 'tweets.like_count', 'tweets.created_at']);
+        if($isHot){
+            $tweets = $this->rememberOnHotRedis($cacheKey, $ttl, function() use ($userId) {
+                return $this->fetchTimeline($userId);
             });
-        });
+        } else {
+            $tweets = Cache::remember($cacheKey, now()->addSeconds($ttl), function () use ($userId) {
+                return $this->fetchTimeline($userId);
+            });
+        }
 
-        return response()->json(['data' => $tweets, 'hot' => $isHot]);
+        return response()->json(['data' => $tweets, 'hot' => $isHot, 'redis' => $isHot ? 'hot-server' : 'cold-server']);
+    }
+
+    private function fetchTimeline(int $userId)
+    {
+        Log::info("DB QUERY RAN for user {$userId}");
+
+        return DB::table('tweets')
+            ->join('follows', 'follows.followed_id', '=', 'tweets.user_id')
+            ->where('follows.follower_id', $userId)
+            ->orderByDesc('tweets.created_at')
+            ->limit(20)
+            ->get(['tweets.id', 'tweets.user_id', 'tweets.body', 'tweets.like_count', 'tweets.created_at']);
+    }
+
+    private function rememberOnHotRedis(string $key, int $ttl, callable $callback)
+    {
+        $cached = Redis::connection('hot')->get($key);
+        if($cached !== null) {
+            return json_decode($cached, true);     
+        }
+
+        $value = $callback();
+        Redis::connection('hot')->setEx($key, $ttl, json_encode($value));
+        return $value;
     }
 }

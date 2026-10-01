@@ -18,17 +18,18 @@ class HotKeyDetector
         if ($count === 1) {
             Redis::expire($countKey, $this->windowSeconds);
         }
-        $isHot = $count >= $this->threshold;
+        $isHotNow = $count >= $this->threshold;
 
-        if($isHot){
+        if ($isHotNow) {
             Redis::sAdd('hot_keys', $key);
         }
 
-        return $isHot;
+        // Once a key is flagged hot, stay hot — don't rely only on this window's burst.
+        return $isHotNow || $this->isHot($key);
     }
 
     public function isHot(string $key): bool
     {
-        return Redis::sismember('hot_keys', $key);
+        return Redis::sIsMember('hot_keys', $key);
     }
 }
