@@ -2,7 +2,7 @@
 
 import { Search } from 'lucide-react';
 import type { Tweet } from '@/lib/types';
-import { compactCount, displayName } from '@/lib/format';
+import { compactCount } from '@/lib/format';
 
 type Props = {
   query: string;
@@ -49,7 +49,7 @@ export default function RightRail({ query, onQueryChange, tweets }: Props) {
               className="block px-4 py-3 hover:bg-hover transition-colors"
             >
               <p className="text-[13px] text-muted">
-                {index + 1} · {displayName(tweet.user_id)}
+                {index + 1} · {tweet.author_name}
               </p>
               <p className="text-[15px] font-bold leading-5 line-clamp-2 mt-0.5">
                 {tweet.body}

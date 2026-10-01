@@ -36,7 +36,7 @@ export const API_BASE_URL =
 const DEFAULT_TIMEOUT_MS = 8000;
 
 export type RequestOptions = {
-  method?: 'GET' | 'POST';
+  method?: 'GET' | 'POST' | 'DELETE';
   body?: unknown;
   signal?: AbortSignal;
   timeoutMs?: number;

@@ -14,6 +14,14 @@ export function initials(userId: number): string {
   return `U${userId}`.slice(0, 2).toUpperCase();
 }
 
+/** "Milo Quinn" -> "MQ". Falls back to the first two characters. */
+export function initialsFromName(name: string): string {
+  const parts = name.trim().split(/\s+/).filter(Boolean);
+  if (parts.length === 0) return '?';
+  if (parts.length === 1) return parts[0].slice(0, 2).toUpperCase();
+  return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase();
+}
+
 const AVATAR_TINTS = [
   'bg-[#1d9bf0]',
   'bg-[#f91880]',

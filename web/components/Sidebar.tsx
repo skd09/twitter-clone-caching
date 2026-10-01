@@ -3,12 +3,14 @@ import {
   Bookmark,
   Home,
   Mail,
+  LogOut,
   MoreHorizontal,
   Search,
   User,
   Zap,
 } from 'lucide-react';
-import { avatarTint, displayName, handle, initials } from '@/lib/format';
+import { avatarTint, displayName, handle, initials, initialsFromName } from '@/lib/format';
+import type { Viewer } from '@/lib/types';
 
 const NAV = [
   { label: 'Home', icon: Home, active: true },
@@ -20,7 +22,20 @@ const NAV = [
   { label: 'More', icon: MoreHorizontal, active: false },
 ];
 
-export default function Sidebar({ viewerId }: { viewerId: number }) {
+export default function Sidebar({
+  viewerId,
+  viewer,
+  onLogout,
+}: {
+  viewerId: number;
+  viewer: Viewer | null;
+  onLogout: () => void;
+}) {
+  // Falls back to the id-derived label until the timeline response arrives.
+  const name = viewer?.name ?? displayName(viewerId);
+  const atHandle = viewer ? `@${viewer.username}` : handle(viewerId);
+  const avatar = viewer ? initialsFromName(viewer.name) : initials(viewerId);
+
   return (
     <header className="sticky top-0 h-screen shrink-0 w-[88px] xl:w-[275px] flex flex-col items-center xl:items-stretch px-1 xl:px-2 py-1">
       <a
@@ -67,6 +82,9 @@ export default function Sidebar({ viewerId }: { viewerId: number }) {
       <div className="mt-auto mb-3 w-full">
         <button
           type="button"
+          onClick={onLogout}
+          title="Sign out"
+          aria-label={`Signed in as ${name}. Sign out.`}
           className="w-full flex items-center gap-3 p-3 rounded-full hover:bg-hover transition-colors"
         >
           <span
@@ -74,17 +92,17 @@ export default function Sidebar({ viewerId }: { viewerId: number }) {
               viewerId
             )} text-white flex items-center justify-center font-bold text-sm`}
           >
-            {initials(viewerId)}
+            {avatar}
           </span>
           <span className="hidden xl:flex flex-col items-start min-w-0 leading-tight">
             <span className="font-bold text-[15px] truncate max-w-[140px]">
-              {displayName(viewerId)}
+              {name}
             </span>
             <span className="text-muted text-[15px] truncate max-w-[140px]">
-              {handle(viewerId)}
+              {atHandle}
             </span>
           </span>
-          <MoreHorizontal className="hidden xl:block w-[18px] h-[18px] ml-auto shrink-0" />
+          <LogOut className="hidden xl:block w-[18px] h-[18px] ml-auto shrink-0" />
         </button>
       </div>
     </header>
