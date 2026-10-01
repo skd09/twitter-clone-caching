@@ -18,6 +18,13 @@ class TweetController extends Controller
             return response()->json(['error' => 'User ID is required'], 422);
         }
 
+        $likedByKey = "tweet:{$tweetId}:liked_by";
+
+        // Fast path: Redis already knows this user liked it — reject immediately, no DB hit.
+        if(Redis::sIsMember($likedByKey, $userId)) {
+            return response()->json(['error' => 'User has already liked this tweet'], 409);
+        }
+
         try {
             DB::table('likes')->insert([
                 'user_id' => $userId,
@@ -33,13 +40,16 @@ class TweetController extends Controller
             throw $e; // rethrow if it's a different error
         }
 
+        // Genuinely new like — record it in both places.
+        Redis::sAdd($likedByKey, $userId);
+
         DB::table('tweets')
             ->where('id', $tweetId)
             ->increment('like_count');
         
         $row = DB::table('tweets')
             ->where('id', $tweetId)
-            ->first(['like_count', 'update_at']);
+            ->first(['like_count', 'updated_at']);
 
         $this->writeIfNewer($tweetId, $row->like_count, strtotime($row->updated_at));
 
@@ -49,7 +59,6 @@ class TweetController extends Controller
     public function readLikesSlow(int $tweetId)
     {
         $row = DB::table('tweets')->where('id', $tweetId)->first(['like_count', 'updated_at']);
-
         Log::info("SLOW READ fetched {$row->like_count} (version " . strtotime($row->updated_at) . ") for tweet {$tweetId}, about to sleep...");
 
         sleep(3); // Simulate a slow read
