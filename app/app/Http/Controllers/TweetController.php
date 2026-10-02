@@ -8,6 +8,7 @@ use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Redis;
+use App\Caching\TweetCounts;
 
 class TweetController extends Controller
 {
@@ -47,6 +48,8 @@ class TweetController extends Controller
         DB::table('tweets')
             ->where('id', $tweetId)
             ->increment('like_count');
+        
+        app(TweetCounts::class)->bump($tweetId, 'like_count');
         
         $row = DB::table('tweets')
             ->where('id', $tweetId)

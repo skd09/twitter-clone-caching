@@ -21,7 +21,8 @@ class BackfillFeeds extends Command
     protected $signature = 'feeds:backfill
         {--per-user=50 : How many posts to seed into each inbox}
         {--users= : Only backfill the first N users (by id)}
-        {--only= : Comma-separated user ids, e.g. --only=1685,5720}';
+        {--only= : Comma-separated user ids, e.g. --only=1685,5720}
+        {--missing : Only users whose inbox does not exist yet (resume a partial run)}';
 
     protected $description = 'Seed fanout inboxes from existing posts';
 
@@ -39,6 +40,16 @@ class BackfillFeeds extends Command
         }
 
         $userIds = $query->pluck('id');
+
+        // Resuming a partial run. Inboxes are not a clean id prefix -- real
+        // fanout creates them for whoever follows the poster -- so resume by
+        // checking which keys exist, not by picking an id to start from.
+        if ($this->option('missing')) {
+            $before = $userIds->count();
+            $userIds = $this->withoutExistingInboxes($userIds);
+            $skipped = $before - $userIds->count();
+            $this->line("Skipping {$skipped} user(s) that already have an inbox.");
+        }
 
         if ($userIds->isEmpty()) {
             $this->warn('No users matched.');
@@ -97,6 +108,29 @@ class BackfillFeeds extends Command
         }
 
         return self::SUCCESS;
+    }
+
+    /** Pipelined EXISTS so the check costs a few round trips, not one per user. */
+    private function withoutExistingInboxes(\Illuminate\Support\Collection $userIds): \Illuminate\Support\Collection
+    {
+        $redis = Redis::connection('default');
+        $missing = [];
+
+        foreach (array_chunk($userIds->all(), 1000) as $chunk) {
+            $results = $redis->pipeline(function ($pipe) use ($chunk) {
+                foreach ($chunk as $id) {
+                    $pipe->exists("feed:{$id}");
+                }
+            });
+
+            foreach ($chunk as $i => $id) {
+                if (empty($results[$i])) {
+                    $missing[] = $id;
+                }
+            }
+        }
+
+        return collect($missing);
     }
 
     /** Same shape the timeline returns, including this viewer's own flags. */

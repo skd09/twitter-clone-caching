@@ -253,7 +253,9 @@ class TimelineController extends Controller
             return strcmp($b['created_at'], $a['created_at']) ?: ($b['id'] <=> $a['id']);
         });
 
-        return array_slice($merged, 0, self::PAGE_SIZE);
+        $page = array_slice($merged, 0, self::PAGE_SIZE);
+
+        return $this->attachViewerFlags($this->withLiveCounts($page), $userId);
     }
 
     /**
@@ -265,44 +267,43 @@ class TimelineController extends Controller
      */
     private function celebrityPosts(int $userId): array
     {
+
+        $hotIds = $this->hotTimelineUserIds();
+
+        if(empty($hotIds)) {
+            return [];
+        }
+
+        $celebrityIds = DB::table('follows')
+            ->where('follower_id', $userId)
+            ->whereIn('followed_id', $hotIds)
+            ->pluck('followed_id');
+
+        if($celebrityIds->isEmpty()) {
+            return [];
+        }
+
+        $merged = [];
+        foreach($celebrityIds as $celebId) {
+            $merged = array_merge($merged, $this->celebrityRecentPosts($celebId));
+        }
+
+        return $merged;
+    }
+
+    /**
+     * One celebrity's recent posts, shared across every one of their
+     * followers — cached once per celebrity, not once per viewer.
+     */
+    private function celebrityRecentPosts(int $celebrityId): array
+    {
         return Cache::remember(
-            "celebfeed:{$userId}",
+            "celeb:{$celebrityId}:recent",
             now()->addSeconds(30),
-            function () use ($userId) {
-                // One SMEMBERS for the whole hot set, rather than one SISMEMBER
-                // per followed account.
-                $hotIds = [];
-                foreach (Redis::connection('default')->sMembers('hot_keys') as $key) {
-                    if (str_starts_with($key, 'timeline:')) {
-                        $hotIds[] = (int) substr($key, strlen('timeline:'));
-                    }
-                }
-
-                if (empty($hotIds)) {
-                    return [];
-                }
-
-                // Let Postgres do the intersection instead of filtering in PHP.
-                $celebrityIds = DB::table('follows')
-                    ->where('follower_id', $userId)
-                    ->whereIn('followed_id', $hotIds)
-                    ->pluck('followed_id');
-
-                if ($celebrityIds->isEmpty()) {
-                    return [];
-                }
-
+            function () use ($celebrityId) {
                 return DB::table('tweets')
                     ->join('users', 'users.id', '=', 'tweets.user_id')
-                    ->leftJoin('likes', function ($join) use ($userId) {
-                        $join->on('likes.tweet_id', '=', 'tweets.id')
-                            ->where('likes.user_id', '=', $userId);
-                    })
-                    ->leftJoin('reposts', function ($join) use ($userId) {
-                        $join->on('reposts.tweet_id', '=', 'tweets.id')
-                            ->where('reposts.user_id', '=', $userId);
-                    })
-                    ->whereIn('tweets.user_id', $celebrityIds)
+                    ->where('tweets.user_id', $celebrityId)
                     ->whereNull('tweets.parent_tweet_id')
                     ->orderByDesc('tweets.created_at')
                     ->orderByDesc('tweets.id')
@@ -313,18 +314,63 @@ class TimelineController extends Controller
                         'users.name as author_name',
                         'users.username as author_handle',
                         'tweets.body',
-                        'tweets.like_count',
-                        'tweets.repost_count',
-                        'tweets.reply_count',
-                        'tweets.view_count',
-                        'tweets.share_count',
-                        'tweets.created_at',
-                        DB::raw('(likes.id IS NOT NULL) as liked_by_viewer'),
-                        DB::raw('(reposts.id IS NOT NULL) as reposted_by_viewer'),
+                        'tweets.created_at'
                     ])
-                    ->map(fn ($row) => (array) $row)
+                    ->map(fn($row) => (array) $row)
                     ->all();
             }
         );
+    }
+
+    private function withLiveCounts(array $rows): array
+    {
+        if(empty($rows)) {
+            return $rows;
+        }
+        $counts = app(\App\Caching\TweetCounts::class)->many(array_column($rows, 'id'));
+        foreach ($rows as &$row) {
+            $row = array_merge($row, $counts[$row['id']] ?? []);
+        }
+        return $rows;
+    }
+
+    /** Attaches liked_by_viewer / reposted_by_viewer cheaply, per request. */
+    private function attachViewerFlags(array $rows, int $userId): array
+    {
+        $tweetIds = array_column($rows, 'id');
+        if (empty($tweetIds)) {
+            return $rows;
+        }
+
+        $liked = DB::table('likes')
+            ->where('user_id', $userId)
+            ->whereIn('tweet_id', $tweetIds)
+            ->pluck('tweet_id')
+            ->flip();
+
+        $reposted = DB::table('reposts')
+            ->where('user_id', $userId)
+            ->whereIn('tweet_id', $tweetIds)
+            ->pluck('tweet_id')
+            ->flip();
+
+        foreach ($rows as &$row) {
+            $row['liked_by_viewer'] = isset($liked[$row['id']]);
+            $row['reposted_by_viewer'] = isset($reposted[$row['id']]);
+        }
+
+        return $rows;
+    }
+
+    /** Which timeline keys are currently flagged hot, with the prefix stripped to plain user IDs. */
+    private function hotTimelineUserIds(): array
+    {
+        $hotIds = [];
+        foreach (Redis::connection('default')->sMembers('hot_keys') as $key) {
+            if(str_starts_with($key, 'timeline:')) {
+                $hotIds[] = (int) substr($key, strlen('timeline:'));
+            }
+        }
+        return $hotIds;
     }
 }

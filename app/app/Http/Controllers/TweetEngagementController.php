@@ -5,6 +5,7 @@ namespace App\Http\Controllers;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Redis;
+use App\Caching\TweetCounts;
 
 /**
  * Engagement actions behind the tweet card: repost, reply, view and share.
@@ -63,6 +64,7 @@ class TweetEngagementController extends Controller
 
         Redis::sAdd($repostedByKey, $userId);
         DB::table('tweets')->where('id', $tweetId)->increment('repost_count');
+        app(TweetCounts::class)->bump($tweetId, 'repost_count');   // new line
 
         return response()->json([
             'tweet_id' => $tweetId,
@@ -98,6 +100,7 @@ class TweetEngagementController extends Controller
             ->where('id', $tweetId)
             ->where('repost_count', '>', 0)
             ->decrement('repost_count');
+        app(TweetCounts::class)->bump($tweetId, 'repost_count', -1);   // new line
 
         return response()->json([
             'tweet_id' => $tweetId,
@@ -141,6 +144,8 @@ class TweetEngagementController extends Controller
 
             return DB::table('tweets')->where('id', $replyId)->first();
         });
+
+        app(TweetCounts::class)->bump($tweetId, 'reply_count');   // new line
 
         return response()->json([
             'tweet_id' => $tweetId,
@@ -192,6 +197,7 @@ class TweetEngagementController extends Controller
     {
         $pending = (int) Redis::incr("tweet:{$tweetId}:pending_{$bucket}");
         Redis::sAdd("tweet:with_pending_{$bucket}", $tweetId);
+        app(TweetCounts::class)->bump($tweetId, $column); // ensure the hash exists
 
         $stored = (int) DB::table('tweets')->where('id', $tweetId)->value($column);
 

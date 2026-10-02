@@ -13,6 +13,13 @@ class HotKeyDetector
 
     public function recordAccess(string $key): bool
     {
+        // Already known hot? Skip the counter entirely — one cheap read,
+        // no write, so a celebrity's steady traffic stops hitting the
+        // cold server's INCR on every single request.
+        if ($this->isHot($key)) {
+            return true;
+        }
+
         $countKey = "hotcount:{$key}";
         $count = Redis::incr($countKey);
         if ($count === 1) {
