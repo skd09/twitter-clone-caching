@@ -14,8 +14,28 @@ the failure was reproduced on demand before it was fixed.
 
 ## The learning path
 
-Each stage is tagged, so you can check out the code as it stood at that point:
-`git checkout lab-6`.
+Every lab is tagged, so you can read the code as it stood at that point — or diff
+one lab against the previous to see exactly what that lesson changed.
+
+| Tag | Lab | Browse | What changed |
+|---|---|---|---|
+| [`lab-2`](https://github.com/skd09/twitter-clone-caching/releases/tag/lab-2) | Cache-aside — locality is the whole game | [code](https://github.com/skd09/twitter-clone-caching/tree/lab-2) | — |
+| [`lab-3`](https://github.com/skd09/twitter-clone-caching/releases/tag/lab-3) | Write-behind — and the data loss it trades for | [code](https://github.com/skd09/twitter-clone-caching/tree/lab-3) | [diff](https://github.com/skd09/twitter-clone-caching/compare/lab-2...lab-3) |
+| [`lab-4`](https://github.com/skd09/twitter-clone-caching/releases/tag/lab-4) | Eviction policies from scratch (FIFO / LRU / LFU) | [code](https://github.com/skd09/twitter-clone-caching/tree/lab-4) | [diff](https://github.com/skd09/twitter-clone-caching/compare/lab-3...lab-4) |
+| [`lab-5`](https://github.com/skd09/twitter-clone-caching/releases/tag/lab-5) | TTL fixed vs jittered — an honest negative result | [code](https://github.com/skd09/twitter-clone-caching/tree/lab-5) | [diff](https://github.com/skd09/twitter-clone-caching/compare/lab-4...lab-5) |
+| [`lab-6`](https://github.com/skd09/twitter-clone-caching/releases/tag/lab-6) | Cache stampede — proven, fixed, re-measured | [code](https://github.com/skd09/twitter-clone-caching/tree/lab-6) | [diff](https://github.com/skd09/twitter-clone-caching/compare/lab-5...lab-6) |
+| [`lab-7`](https://github.com/skd09/twitter-clone-caching/releases/tag/lab-7) | Consistency — the stale-write race | [code](https://github.com/skd09/twitter-clone-caching/tree/lab-7) | [diff](https://github.com/skd09/twitter-clone-caching/compare/lab-6...lab-7) |
+| [`lab-8`](https://github.com/skd09/twitter-clone-caching/releases/tag/lab-8) | Hot/cold Redis isolation | [code](https://github.com/skd09/twitter-clone-caching/tree/lab-8) | [diff](https://github.com/skd09/twitter-clone-caching/compare/lab-7...lab-8) |
+| [`lab-9`](https://github.com/skd09/twitter-clone-caching/releases/tag/lab-9) | Fan-out on write | [code](https://github.com/skd09/twitter-clone-caching/tree/lab-9) | [diff](https://github.com/skd09/twitter-clone-caching/compare/lab-8...lab-9) |
+| [`lab-10`](https://github.com/skd09/twitter-clone-caching/releases/tag/lab-10) | Live counts over a fanned-out feed | [code](https://github.com/skd09/twitter-clone-caching/tree/lab-10) | [diff](https://github.com/skd09/twitter-clone-caching/compare/lab-9...lab-10) |
+| [`lab-11`](https://github.com/skd09/twitter-clone-caching/releases/tag/lab-11) | Observability, and shrinking the inbox | [code](https://github.com/skd09/twitter-clone-caching/tree/lab-11) | [diff](https://github.com/skd09/twitter-clone-caching/compare/lab-10...lab-11) |
+
+```bash
+git clone https://github.com/skd09/twitter-clone-caching.git
+cd twitter-clone-caching
+git checkout lab-6        # the stampede lab, before and after the fix
+git diff lab-5 lab-6      # or just the change itself
+```
 
 ### Baseline — measure before you optimise
 
@@ -31,7 +51,7 @@ p50 128ms · p90 190ms · p95 220ms · 125 req/s · 0% errors
 > A single-process dev server queues requests instead of running them. Caught by
 > looking at the min-vs-p90 spread rather than the average.
 
-### Lab 2 — Cache-aside, and why locality is the whole game `lab-2`
+### Lab 2 — Cache-aside, and why locality is the whole game [`lab-2`](https://github.com/skd09/twitter-clone-caching/tree/lab-2)
 
 `Cache::remember` around the timeline query. The interesting result is that the
 same code produces wildly different value depending on traffic shape:
@@ -48,7 +68,7 @@ same code produces wildly different value depending on traffic shape:
 _Debugging lesson:_ hours lost to a key-name typo (`timer:` vs `timeline:`) while
 theorising about serialization and worker state. Check the actual key in Redis first.
 
-### Lab 3 — Write-behind, and the data loss it's actually trading for `lab-3`
+### Lab 3 — Write-behind, and the data loss it's actually trading for [`lab-3`](https://github.com/skd09/twitter-clone-caching/tree/lab-3)
 
 Likes buffered in Redis (`INCR`), drained to Postgres by a flush worker using
 atomic `GETDEL` so nothing is double-counted or lost between read and delete.
@@ -61,7 +81,7 @@ likes with no error anywhere in the stack**.
 > cache. Running Redis without a volume is correct for query caching and wrong for
 > buffered writes.
 
-### Lab 4 — Eviction policies from scratch `lab-4`
+### Lab 4 — Eviction policies from scratch [`lab-4`](https://github.com/skd09/twitter-clone-caching/tree/lab-4)
 
 `FifoCache`, `LruCache`, `LfuCache` as plain PHP — no Redis — to understand the
 mechanics. FIFO was tested specifically to prove reads _don't_ affect eviction
@@ -70,7 +90,7 @@ matching how Redis approximates `allkeys-lfu`.
 
 > ⚠️ FIFO is tinker-verified. **LRU and LFU are code-reviewed but not runtime-verified.**
 
-### Lab 5 — TTL jitter, and an honest negative result `lab-5`
+### Lab 5 — TTL jitter, and an honest negative result [`lab-5`](https://github.com/skd09/twitter-clone-caching/tree/lab-5)
 
 Fixed vs jittered TTL under 100 VUs against 5 keys, three runs each:
 
@@ -86,7 +106,7 @@ Fixed vs jittered TTL under 100 VUs against 5 keys, three runs each:
 > burst-vs-calm distinction, so the per-write `random_int()` cost is pure overhead.
 > Jitter is multi-key hygiene, not a single-hot-key fix.
 
-### Lab 6 — Cache stampede: proven, then fixed, then re-measured `lab-6`
+### Lab 6 — Cache stampede: proven, then fixed, then re-measured [`lab-6`](https://github.com/skd09/twitter-clone-caching/tree/lab-6)
 
 A `HotKeyDetector` (Redis `INCR` + fixed-window TTL, the rate-limiter pattern) flags
 keys crossing 20 req/10s. Then the stampede was proven by **logging every real DB
@@ -112,7 +132,7 @@ The first fix _looked_ right but only got 12 → 14, because an unlocked
 > request waits behind 199 others. A fix that works at 5 concurrent requests is not
 > proof it works at 200.
 
-### Lab 7 — Consistency: the stale-write race `lab-7`
+### Lab 7 — Consistency: the stale-write race [`lab-7`](https://github.com/skd09/twitter-clone-caching/tree/lab-7)
 
 Reproduced on demand with a deliberate 3s delay: a slow reader overwrites the cache
 with a value that was already stale by the time it landed.
@@ -128,7 +148,7 @@ row's `updated_at`, and `writeIfNewer()` refuses out-of-order writes.
 > Same principle as the `UNIQUE(user_id, tweet_id)` constraint and Redis's atomic
 > `INCR`: push the guarantee into the data, not into the timing.
 
-### Lab 8 — Hot/cold isolation at the infrastructure level `lab-8`
+### Lab 8 — Hot/cold isolation at the infrastructure level [`lab-8`](https://github.com/skd09/twitter-clone-caching/tree/lab-8)
 
 Two separate Redis containers, not two databases on one. Hot keys bypass the cache
 facade entirely and go to `:6381` as JSON; cold keys use `Cache::` on `:6380`.
@@ -137,7 +157,7 @@ Isolation verified both ways.
 _Bug found:_ hotness was read from the _current window_ only, so a key already in
 `hot_keys` reported `hot:false` after the window rolled. Now sticky.
 
-### Lab 9 — Fan-out on write, and what delivery actually costs `lab-9`
+### Lab 9 — Fan-out on write, and what delivery actually costs [`lab-9`](https://github.com/skd09/twitter-clone-caching/tree/lab-9)
 
 Posting pushes an entry into every follower's Redis inbox (`feed:{followerId}`,
 capped at 100). Reading opens the inbox instead of re-running the follows join.
@@ -155,7 +175,7 @@ celebrity split.
 Hence `feeds:backfill`, which seeds inboxes from posts that already exist — the same
 job real systems run when enabling fanout, and again on every new follow.
 
-### Lab 10 — Live counts over a fanned-out feed `lab-10`
+### Lab 10 — Live counts over a fanned-out feed [`lab-10`](https://github.com/skd09/twitter-clone-caching/tree/lab-10)
 
 Fanout's trade-off arrives immediately: an inbox entry is a **photocopy taken at
 posting time**. Like a post and the database is correct, but the feed still reads
@@ -183,7 +203,7 @@ disagrees with the endpoint that just returned them.
 > Anything per-viewer is wrong to store in a shared snapshot. That single rule is
 > what the whole lab is about.
 
-### Lab 11 — Observability, and shrinking the inbox `lab-11`
+### Lab 11 — Observability, and shrinking the inbox [`lab-11`](https://github.com/skd09/twitter-clone-caching/tree/lab-11)
 
 Every cache now reports hit and miss to Prometheus, scraped from `/api/metrics` and
 rendered in a provisioned Grafana dashboard. Under a 45-second mixed load:
