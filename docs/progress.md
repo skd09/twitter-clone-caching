@@ -113,3 +113,7 @@ Merge: rows from the inbox and the celebrity list are keyed by tweet id before s
 Fallback: a user with an empty inbox (a new account) now gets their timeline from Cache::remember again, 60s, with rows converted to plain arrays first so the cache never has to rebuild a Collection (the Lab 2 __PHP_Incomplete_Class trap). Verified on a user whose inbox I deleted: two requests, one DB query, key present in Redis.
 Finding: every seeded user already had a 50-entry inbox from a backfill, so the fallback is now the rare path. The remaining per-request Postgres work is the follower-to-celebrity lookup and the viewer-flag queries; measure before caching them.
 Interview line: "I tested the fallback by deleting one user's inbox on purpose, because the normal path never reached it."
+
+## Observability: MetricsCollector, /metrics, Prometheus, Grafana
+Counters live in one Redis hash (metrics), bumped with hIncrBy from the timeline controller: cache_hit_total and cache_miss_total labelled hot or cold, plus inbox_served_total. /api/metrics prints them in Prometheus text format. Prometheus (5s scrape) and Grafana run in Compose. Verified: a panel on rate(cache_hit_total[1m]) moved while a request loop ran.
+Not done yet: latency percentiles, a DB query counter, hit-ratio panels, counters on the write endpoints.

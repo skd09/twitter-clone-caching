@@ -2,6 +2,7 @@
 
 namespace App\Caching;
 
+use App\Metrics\MetricsCollector;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Redis;
 
@@ -52,7 +53,14 @@ class TweetCounts
             }
         }
 
+        // The counts hash is a cache, so measure it like one. Counted in posts,
+        // not requests: one page is typically 19 hits and 1 miss.
+        $metrics = app(MetricsCollector::class);
+        $metrics->increment('cache_hit_total', ['source' => 'counts'], count($tweetIds) - count($missing));
+
         if ($missing) {
+            $metrics->increment('cache_miss_total', ['source' => 'counts'], count($missing));
+
             $rows = DB::table('tweets')
                 ->whereIn('id', $missing)
                 ->get(array_merge(['id'], self::FIELDS));

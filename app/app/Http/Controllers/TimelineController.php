@@ -7,6 +7,7 @@ use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Log;
 use App\Caching\HotKeyDetector;
+use App\Metrics\MetricsCollector;
 use Illuminate\Support\Facades\Redis;
 use Illuminate\Support\Collection;
 
@@ -35,6 +36,8 @@ class TimelineController extends Controller
             return $this->page($userId, $before, $after);
         }
 
+        app(MetricsCollector::class)->increment('timeline_requests_total', ['path' => 'first']);
+
         $isHot = $detector->recordAccess("timeline:{$userId}");
         $cacheKey = "timeline:{$userId}";
 
@@ -52,14 +55,21 @@ class TimelineController extends Controller
 
         // Cache-aside on a tiny profile row: one Redis GET instead of a DB hit per
         // request. Stored as a plain array, so serializable_classes never bites.
+        $profileMissed = false;
         $viewer = Cache::remember(
             "user:{$userId}:profile",
             now()->addMinutes(5),
-            function () use ($userId) {
+            function () use ($userId, &$profileMissed) {
+                $profileMissed = true;
                 $row = DB::table('users')->where('id', $userId)->first(['id', 'name', 'username']);
 
                 return $row ? (array) $row : null;
             }
+        );
+
+        app(MetricsCollector::class)->increment(
+            $profileMissed ? 'cache_miss_total' : 'cache_hit_total',
+            ['source' => 'profile']
         );
 
         $rows = $this->rowList($tweets);
@@ -79,6 +89,12 @@ class TimelineController extends Controller
     /** Uncached cursor page. Never logs the line lab 6 counts DB hits with. */
     private function page(int $userId, ?array $before, ?array $after)
     {
+        // Cursor pages are uncached by design; counting them separately keeps
+        // the cache hit rate above honest.
+        app(MetricsCollector::class)->increment(
+            'timeline_requests_total',
+            ['path' => $after !== null ? 'after' : 'before']
+        );
         // One extra row tells us whether another page exists, without a count().
         $rows = $this->fetchTimeline($userId, $before, $after, self::PAGE_SIZE + 1, false)->all();
 
@@ -213,10 +229,15 @@ class TimelineController extends Controller
 
     private function rememberOnHotRedis(string $key, int $ttl, callable $callback)
     {
+        $metrics = app(MetricsCollector::class);
+
         $cached = Redis::connection('hot')->get($key);
         if($cached !== null) {
+            $metrics->increment('cache_hit_total', ['source' => 'hot']);
             return json_decode($cached, true);     
         }
+
+        $metrics->increment('cache_miss_total', ['source' => 'hot']);
 
         $value = $callback();
         Redis::connection('hot')->setEx($key, $ttl, json_encode($value));
@@ -230,6 +251,7 @@ class TimelineController extends Controller
      */
     private function getMergedFeed(int $userId): array
     {
+        $metrics = app(MetricsCollector::class);
         $feedItems = Redis::connection('default')->lRange("feed:{$userId}", 0, -1);
 
         // Entries written before the lTrim fix are bare integers, not posts.
@@ -242,17 +264,25 @@ class TimelineController extends Controller
 
         // No inbox yet (new account, or posts predating fanout): fall back.
         if (empty($fromFeed)) {
+            $missed = false;
+
             // return $this->rowList($this->fetchTimeline($userId));
-            return Cache::remember(
+            $rows = Cache::remember(
                 "timeline:{$userId}",
                 now()->addSeconds(60),
-                function () use ($userId) {
+                function () use ($userId, &$missed) {
+                    $missed = true;
                     return $this->fetchTimeline($userId)
                         ->map(fn ($row) => (array) $row)
                         ->all();
                 }
             );
+
+            $metrics->increment($missed ? 'cache_miss_total' : 'cache_hit_total', ['source' => 'cold']);
+            return $rows;
         }
+
+        $metrics->increment('inbox_served_total');
 
         $byId = [];
         foreach(array_merge($fromFeed, $this->celebrityPosts($userId)) as $row) {
@@ -269,7 +299,10 @@ class TimelineController extends Controller
 
         $page = array_slice($merged, 0, self::PAGE_SIZE);
 
-        return $this->attachViewerFlags($this->withLiveCounts($page), $userId);
+        return $this->attachViewerFlags(
+            $this->withLiveCounts($this->hydrateContent($page)),
+            $userId
+        );
     }
 
     /**
@@ -311,29 +344,71 @@ class TimelineController extends Controller
      */
     private function celebrityRecentPosts(int $celebrityId): array
     {
-        return Cache::remember(
+        $missed = false;
+        $posts = Cache::remember(
             "celeb:{$celebrityId}:recent",
             now()->addSeconds(30),
-            function () use ($celebrityId) {
+            function () use ($celebrityId, &$missed) {
+                $missed = true;
                 return DB::table('tweets')
-                    ->join('users', 'users.id', '=', 'tweets.user_id')
                     ->where('tweets.user_id', $celebrityId)
                     ->whereNull('tweets.parent_tweet_id')
                     ->orderByDesc('tweets.created_at')
                     ->orderByDesc('tweets.id')
                     ->limit(self::PAGE_SIZE)
-                    ->get([
-                        'tweets.id',
-                        'tweets.user_id',
-                        'users.name as author_name',
-                        'users.username as author_handle',
-                        'tweets.body',
-                        'tweets.created_at'
-                    ])
+                    ->get(['tweets.id', 'tweets.created_at'])
                     ->map(fn($row) => (array) $row)
                     ->all();
             }
         );
+
+        app(MetricsCollector::class)->increment(
+            $missed ? 'cache_miss_total' : 'cache_hit_total',
+            ['source' => 'celebrity']
+        );
+
+        return $posts;
+    }
+
+    /**
+     * Turns {id, created_at} references into renderable posts.
+     *
+     * One query, by primary key, for the 20 rows that survived the merge -- the
+     * expensive follows join stays skipped. Tweet body and author never change,
+     * so this is the only part safe to have copied into inboxes, and it is still
+     * cheaper not to. Posts deleted since fanout simply drop out here instead of
+     * lingering in every inbox as a stale copy.
+     */
+    private function hydrateContent(array $refs): array
+    {
+        $ids = array_column($refs, 'id');
+
+        if (empty($ids)) {
+            return [];
+        }
+
+        $rows = DB::table('tweets')
+            ->join('users', 'users.id', '=', 'tweets.user_id')
+            ->whereIn('tweets.id', $ids)
+            ->get([
+                'tweets.id',
+                'tweets.user_id',
+                'users.name as author_name',
+                'users.username as author_handle',
+                'tweets.body',
+                'tweets.created_at',
+            ])
+            ->keyBy('id');
+
+        // whereIn does not preserve order, so walk the refs to keep the sort.
+        $out = [];
+        foreach ($refs as $ref) {
+            if (isset($rows[$ref['id']])) {
+                $out[] = (array) $rows[$ref['id']];
+            }
+        }
+
+        return $out;
     }
 
     private function withLiveCounts(array $rows): array

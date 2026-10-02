@@ -6,6 +6,7 @@ use App\Http\Controllers\TimelineController;
 use App\Http\Controllers\TweetController;
 use App\Http\Controllers\TweetEngagementController;
 use App\Http\Controllers\AuthController;
+use App\Http\Controllers\MetricsController;
 
 Route::get('/user', function (Request $request) {
     return $request->user();
@@ -32,3 +33,6 @@ Route::post('/tweets', [TweetController::class, 'store']);
 // Demo sign-in: any seeded username, password ignored. Not real auth.
 Route::post('/auth/login', [AuthController::class, 'login']);
 Route::get('/auth/suggestions', [AuthController::class, 'suggestionList']);
+
+
+Route::get('/metrics', [MetricsController::class, 'index']);

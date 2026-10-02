@@ -6,6 +6,7 @@ use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Redis;
 use App\Caching\TweetCounts;
+use App\Metrics\MetricsCollector;
 
 /**
  * Engagement actions behind the tweet card: repost, reply, view and share.
@@ -43,6 +44,7 @@ class TweetEngagementController extends Controller
 
         // Fast path: Redis already knows, so no DB round-trip.
         if (Redis::sIsMember($repostedByKey, $userId)) {
+            app(MetricsCollector::class)->increment('reposts_total', ['result' => 'duplicate_redis']);
             return response()->json(['error' => 'User has already reposted this tweet'], 409);
         }
 
@@ -57,6 +59,7 @@ class TweetEngagementController extends Controller
             // 23505 = unique_violation. Redis missed it, so backfill for next time.
             if ($e->getCode() === '23505') {
                 Redis::sAdd($repostedByKey, $userId);
+                app(MetricsCollector::class)->increment('reposts_total', ['result' => 'duplicate_db']);
                 return response()->json(['error' => 'User has already reposted this tweet'], 409);
             }
             throw $e;
@@ -65,6 +68,7 @@ class TweetEngagementController extends Controller
         Redis::sAdd($repostedByKey, $userId);
         DB::table('tweets')->where('id', $tweetId)->increment('repost_count');
         app(TweetCounts::class)->bump($tweetId, 'repost_count');   // new line
+        app(MetricsCollector::class)->increment('reposts_total', ['result' => 'created']);
 
         return response()->json([
             'tweet_id' => $tweetId,
@@ -101,6 +105,7 @@ class TweetEngagementController extends Controller
             ->where('repost_count', '>', 0)
             ->decrement('repost_count');
         app(TweetCounts::class)->bump($tweetId, 'repost_count', -1);   // new line
+        app(MetricsCollector::class)->increment('reposts_total', ['result' => 'undone']);
 
         return response()->json([
             'tweet_id' => $tweetId,
@@ -146,6 +151,7 @@ class TweetEngagementController extends Controller
         });
 
         app(TweetCounts::class)->bump($tweetId, 'reply_count');   // new line
+        app(MetricsCollector::class)->increment('replies_total', ['result' => 'created']);
 
         return response()->json([
             'tweet_id' => $tweetId,
@@ -171,6 +177,8 @@ class TweetEngagementController extends Controller
             $seenKey = "viewer:{$userId}:viewed";
 
             if (Redis::sIsMember($seenKey, $tweetId)) {
+                // Deduped: an impression this viewer already had.
+                app(MetricsCollector::class)->increment('views_total', ['result' => 'deduped']);
                 return response()->json(
                     $this->readCount($tweetId, 'views', 'view_count', false)
                 );
@@ -198,6 +206,10 @@ class TweetEngagementController extends Controller
         $pending = (int) Redis::incr("tweet:{$tweetId}:pending_{$bucket}");
         Redis::sAdd("tweet:with_pending_{$bucket}", $tweetId);
         app(TweetCounts::class)->bump($tweetId, $column); // ensure the hash exists
+        app(MetricsCollector::class)->increment(
+            $bucket === 'views' ? 'views_total' : 'shares_total',
+            ['result' => 'counted']
+        );
 
         $stored = (int) DB::table('tweets')->where('id', $tweetId)->value($column);
 

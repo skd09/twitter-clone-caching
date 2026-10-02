@@ -6,33 +6,29 @@ use Illuminate\Support\Facades\Redis;
 
 class MetricsCollector
 {
-    public function increment(string $metric, array $labels = []): void
+    public function increment(string $name, array $labels = [], int $by = 1): void
     {
-        $key = $this->buildKey($metric, $labels);
-        Redis::connection('default')->incr("metrics:{$key}");
+        Redis::connection('default')->hIncrBy('metrics', $this->fieldName($name, $labels), $by);
     }
 
-    public function get(string $metric, array $labels = []): int
+    public function get(string $name, array $labels = []): int
     {
-        $key = $this->buildKey($metric, $labels);
-        return (int) Redis::connection('default')->get("metrics:{$key}");
+        return (int) Redis::connection('default')->hGet('metrics', $this->fieldName($name, $labels));
     }
 
-    public function allKeys(): array
+    private function fieldName(string $name, array $labels): string
     {
-        $keys = Redis::connection('default')->keys('*metrics:*');
-        return array_map(fn($k) => preg_replace('/^.*metrics:/', '', $k), $keys);
-    }
-
-    private function buildKey(string $metric, array $labels): string
-    {
-        if(empty($labels)) {
-            return $metric;
+        if (empty($labels)) {
+            return $name;
         }
 
         ksort($labels);
-        $labelString = collect($labels)->map(fn($v, $k) => "{$k}={$v}")->implode(',');
 
-        return "{$metric}:{$labelString}";
+        $pairs = [];
+        foreach ($labels as $key => $value) {
+            $pairs[] = "{$key}=\"{$value}\"";
+        }
+
+        return $name . '{' . implode(',', $pairs) . '}';
     }
 }

@@ -9,6 +9,7 @@ use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Redis;
 use App\Caching\TweetCounts;
+use App\Metrics\MetricsCollector;
 
 class TweetController extends Controller
 {
@@ -24,6 +25,8 @@ class TweetController extends Controller
 
         // Fast path: Redis already knows this user liked it — reject immediately, no DB hit.
         if(Redis::sIsMember($likedByKey, $userId)) {
+            // Rejected without touching Postgres - the whole point of the fast path.
+            app(MetricsCollector::class)->increment('likes_total', ['result' => 'duplicate_redis']);
             return response()->json(['error' => 'User has already liked this tweet'], 409);
         }
 
@@ -37,6 +40,8 @@ class TweetController extends Controller
         } catch (\Illuminate\Database\QueryException $e) {
             // Postgres error code 23505 = unique_violation
             if ($e->getCode() === '23505') {
+                // Redis missed it; the constraint caught it. Gap between the two.
+                app(MetricsCollector::class)->increment('likes_total', ['result' => 'duplicate_db']);
                 return response()->json(['error' => 'User has already liked this tweet'], 409);
             }
             throw $e; // rethrow if it's a different error
@@ -50,6 +55,7 @@ class TweetController extends Controller
             ->increment('like_count');
         
         app(TweetCounts::class)->bump($tweetId, 'like_count');
+        app(MetricsCollector::class)->increment('likes_total', ['result' => 'created']);
         
         $row = DB::table('tweets')
             ->where('id', $tweetId)
@@ -100,6 +106,7 @@ class TweetController extends Controller
             // Celebrity: do NOT fan out. Followers will see this via a live
             // merge at read time, not a pre-built list.
             Log::info("Tweet {$tweetId} is now considered a hot key.");
+            app(MetricsCollector::class)->increment('posts_total', ['fanout' => 'skipped_celebrity']);
             return response()->json([
                 'tweet_id' => $tweetId,
                 'fanned_out' => false,
@@ -112,34 +119,11 @@ class TweetController extends Controller
             ->where('followed_id', $userId)
             ->pluck('follower_id');
 
-        // The inbox copy has to carry every field the timeline returns, or cards
-        // read from it render with no author and zeroed counters while cards
-        // from the database (page 2 onward) look correct.
-        $author = Cache::remember(
-            "user:{$userId}:profile",
-            now()->addMinutes(5),
-            function () use ($userId) {
-                $row = DB::table('users')->where('id', $userId)->first(['id', 'name', 'username']);
-
-                return $row ? (array) $row : null;
-            }
-        );
-
+        // A reference, not a copy. Content is immutable so it can be fetched at
+        // read time; counts and per-viewer flags change, and there is no single
+        // correct liked_by_viewer to copy into every follower's inbox anyway.
         $payload = json_encode([
             'id' => $tweetId,
-            'user_id' => (int) $userId,
-            'author_name' => $author['name'] ?? "User {$userId}",
-            'author_handle' => $author['username'] ?? "user{$userId}",
-            'body' => $body,
-            'like_count' => 0,
-            'repost_count' => 0,
-            'reply_count' => 0,
-            'view_count' => 0,
-            'share_count' => 0,
-            // Correct for everyone at this instant: a post nobody has seen yet
-            // cannot have been liked or reposted by any follower.
-            'liked_by_viewer' => false,
-            'reposted_by_viewer' => false,
             'created_at' => now()->toDateTimeString(),
         ]);
 
@@ -147,6 +131,11 @@ class TweetController extends Controller
             Redis::connection('default')->rPush("feed:{$followerId}", $payload);
             Redis::connection('default')->lTrim("feed:{$followerId}", -100, -1); // keep latest 100 only
         }
+
+        $metrics = app(MetricsCollector::class);
+        $metrics->increment('posts_total', ['fanout' => 'delivered']);
+        // How much work one post actually caused.
+        $metrics->increment('fanout_deliveries_total', [], $followerIds->count());
 
         return response()->json([
             'tweet_id' => $tweetId,
