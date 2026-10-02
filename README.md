@@ -1,5 +1,8 @@
 # Twitter Clone — a caching playground
 
+![Laravel 13](https://img.shields.io/badge/Laravel%2013-FF2D20?style=flat-square&logo=laravel&logoColor=white) ![PHP 8](https://img.shields.io/badge/PHP%208-777BB4?style=flat-square&logo=php&logoColor=white) ![Postgres 16](https://img.shields.io/badge/Postgres%2016-4169E1?style=flat-square&logo=postgresql&logoColor=white) ![Redis 7](https://img.shields.io/badge/Redis%207-FF4438?style=flat-square&logo=redis&logoColor=white) ![Next.js 16](https://img.shields.io/badge/Next.js%2016-000000?style=flat-square&logo=nextdotjs&logoColor=white) ![TypeScript](https://img.shields.io/badge/TypeScript-3178C6?style=flat-square&logo=typescript&logoColor=white)
+![Prometheus](https://img.shields.io/badge/Prometheus-E6522C?style=flat-square&logo=prometheus&logoColor=white) ![Grafana](https://img.shields.io/badge/Grafana-F46800?style=flat-square&logo=grafana&logoColor=white) ![k6](https://img.shields.io/badge/k6-7D64FF?style=flat-square&logo=k6&logoColor=white) ![Docker](https://img.shields.io/badge/Docker-2496ED?style=flat-square&logo=docker&logoColor=white)
+
 A Twitter-style feed built specifically to **make caching behaviour visible**. Every
 caching pattern here is implemented against a realistic dataset — 10,000 users,
 ~2,000,000 follows, 1,000,000 posts — then load-tested, measured, and written up
@@ -8,7 +11,23 @@ with the numbers it actually produced.
 The point isn't the clone. It's that each pattern was taken far enough to fail, and
 the failure was reproduced on demand before it was fixed.
 
-**Stack:** Laravel 13 + Octane/RoadRunner · Postgres 16 · Redis 7 (×2) · Next.js 16 · k6
+Running on Laravel 13 behind Octane/RoadRunner, Postgres 16, **two** Redis
+instances (a hot/cold split, see lab 8), a Next.js 16 frontend, and k6 for load.
+
+## What you'll take away
+
+| | |
+|---|---|
+| **Caching strategies** | Cache-aside, write-through and write-behind with a flush worker — and the data loss write-behind is actually trading for, demonstrated by killing Redis mid-buffer |
+| **Failure modes** | Cache stampedes reproduced by counting real DB queries, the stale-write race reproduced on demand, and a cache avalanche that jitter made *worse* |
+| **Eviction** | FIFO, LRU and LFU written from scratch, with the tests that distinguish them |
+| **Consistency** | Version-checked cache writes, and pushing guarantees into the data (unique constraints, atomic `INCR`) rather than into timing |
+| **Scaling reads** | Hot-key detection, hot/cold Redis isolation at the instance level, fan-out on write with a hybrid read-time merge, and keyset pagination |
+| **Observability** | Prometheus counters on every cache, a provisioned Grafana dashboard and alert rules — hit rate, fanout cost, and how much traffic each fast-path absorbs |
+| **Load testing** | k6 scenarios per lab, plus why a single-process dev server lies to you about concurrency |
+
+Every claim above has numbers behind it further down, including the experiments
+that produced a negative result.
 
 ---
 
