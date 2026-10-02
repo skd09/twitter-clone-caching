@@ -230,18 +230,35 @@ class TimelineController extends Controller
     private function rememberOnHotRedis(string $key, int $ttl, callable $callback)
     {
         $metrics = app(MetricsCollector::class);
+        $hot = Redis::connection('hot');
 
-        $cached = Redis::connection('hot')->get($key);
+        $cached = $hot->get($key);
         if($cached !== null) {
             $metrics->increment('cache_hit_total', ['source' => 'hot']);
             return json_decode($cached, true);     
         }
 
-        $metrics->increment('cache_miss_total', ['source' => 'hot']);
+        try {
+            return Cache::lock("lock:{$key}", 5)->block(3, function () use ($hot, $key, $ttl, $callback, $metrics) {
+                $cached = $hot->get($key);
+                if($cached !== null) {
+                    $metrics->increment('cache_hit_total', ['source' => 'hot']);
+                    return json_decode($cached, true);     
+                }
 
-        $value = $callback();
-        Redis::connection('hot')->setEx($key, $ttl, json_encode($value));
-        return $value;
+                $metrics->increment('cache_miss_total', ['source' => 'hot']);
+
+                $value = $callback();
+                $hot->setEx($key, $ttl, json_encode($value));
+                return $value;
+            });
+        } catch(\Illuminate\Contracts\Cache\LockTimeoutException $e) {
+            // Waited 3s and never got the lock: query directly rather than fail the request.
+
+            return $callback();
+        }
+
+       
     }
 
     /**

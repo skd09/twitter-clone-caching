@@ -137,19 +137,82 @@ Isolation verified both ways.
 _Bug found:_ hotness was read from the _current window_ only, so a key already in
 `hot_keys` reported `hot:false` after the window rolled. Now sticky.
 
-### Fan-out on write — the inbox model
+### Lab 9 — Fan-out on write, and what delivery actually costs `lab-9`
 
-The newest layer. Posting delivers a copy of the post into every follower's Redis
-inbox (`feed:{followerId}`, capped at 100). Reading opens the inbox instead of
-re-running the follows join. Celebrities are deliberately **skipped** — copying into
-millions of inboxes inline is the cost fanout can't absorb — and merged in at read
-time instead.
+Posting pushes an entry into every follower's Redis inbox (`feed:{followerId}`,
+capped at 100). Reading opens the inbox instead of re-running the follows join.
+Celebrities are deliberately **skipped** — copying into millions of inboxes inline
+is the cost fanout can't absorb — and merged in at read time instead.
 
-The lesson that only shows up when you build it: **fanout only delivers posts made
-after you switch it on.** Flipping the read path over dropped one feed from 201
-followed accounts to 2. Hence `feeds:backfill`, which seeds inboxes from existing
-posts — the same job real systems run when enabling fanout, and again on every new
-follow.
+One post by an account with 180 followers costs **180 Redis writes**. That number,
+visible as `fanout_deliveries_total` on the dashboard, is the whole argument for the
+celebrity split.
+
+> The lesson that only shows up when you build it: **fanout only delivers posts made
+> after you switch it on.** Flipping the read path over dropped one feed from 201
+> followed accounts to 2 — not broken, just never delivered to.
+
+Hence `feeds:backfill`, which seeds inboxes from posts that already exist — the same
+job real systems run when enabling fanout, and again on every new follow.
+
+### Lab 10 — Live counts over a fanned-out feed `lab-10`
+
+Fanout's trade-off arrives immediately: an inbox entry is a **photocopy taken at
+posting time**. Like a post and the database is correct, but the feed still reads
+the frozen copy. Worse, `liked_by_viewer` is *different for every follower*, so
+there is no single correct value to copy into 180 inboxes at all.
+
+```
+POST /like  -> 200, like_count: 1     the write worked
+POSTGRES    -> like_count = 1         the database is correct
+feed says   -> like_count = 0         the feed is lying
+```
+
+Fixed by splitting the post into what changes and what doesn't:
+
+| Field | Source |
+|---|---|
+| body, author | immutable — safe to read once, cached or joined |
+| counters | `TweetCounts` — Redis hash, Postgres fallback, self-refilling |
+| `liked_by_viewer` | live per-request lookup, never shared |
+
+`TweetCounts` seeds from the database column **plus the unflushed write-behind
+buffer**, otherwise views already sitting in Redis are invisible and the feed
+disagrees with the endpoint that just returned them.
+
+> Anything per-viewer is wrong to store in a shared snapshot. That single rule is
+> what the whole lab is about.
+
+### Lab 11 — Observability, and shrinking the inbox `lab-11`
+
+Every cache now reports hit and miss to Prometheus, scraped from `/api/metrics` and
+rendered in a provisioned Grafana dashboard. Under a 45-second mixed load:
+
+```
+CACHE HIT RATE          LIKES (ops/s)              VIEWS (ops/s)
+  profile    99.8%        duplicate_redis  24.31     deduped  43.40
+  hot        99.6%        created           3.64     counted   3.01
+  celebrity  98.3%
+  counts     94.6%
+```
+
+Those two right-hand columns are the payoff of earlier labs, measured: the Redis
+fast-path absorbs **87% of like traffic** without touching Postgres, and the
+per-viewer dedupe discards **93% of impressions** that would otherwise inflate view
+counts ~15x.
+
+With counts and flags now resolved at read time, the inbox copy was storing fields
+nobody read. Trimmed to `{id, created_at}` — references, not copies — with content
+hydrated by one primary-key query per page:
+
+```
+redis memory:   168 MB   ->  27.5 MB          (6.1x)
+backfill rate:  0.15 s   ->  0.057 s per user  (10,000 inboxes in 8m09s)
+```
+
+The expensive 2M-row follows join stays skipped, which was always the point. A
+deleted post now also disappears from every feed instead of lingering as a frozen
+copy.
 
 ---
 
@@ -167,6 +230,9 @@ follow.
 | Hot-key detection                  | `HotKeyDetector`                                                  |
 | Hot/cold instance split            | `redis.hot` connection                                            |
 | Fan-out on write + read-time merge | `TweetController::store`, `getMergedFeed`                         |
+| Inbox as references + hydration    | `hydrateContent()` — one primary-key query per page               |
+| Per-entity counter cache           | `TweetCounts` — Redis hash, Postgres fallback, Lua-guarded bump   |
+| Cache instrumentation              | `MetricsCollector` — hit/miss per source, scraped by Prometheus   |
 | Keyset pagination                  | `?before=` / `?after=` cursors                                    |
 | Eviction policies                  | `FifoCache`, `LruCache`, `LfuCache`                               |
 
@@ -189,6 +255,17 @@ cd ../web
 npm install && npm run dev                            # http://localhost:3000
 ```
 
+| | |
+|---|---|
+| App | http://localhost:3000 |
+| Metrics (Prometheus format) | http://localhost:8000/api/metrics |
+| Prometheus | http://localhost:9090 |
+| Grafana dashboard | http://localhost:3001/d/tcc-caching |
+
+Grafana needs no login and no setup — the datasource and dashboard are provisioned
+from `infra/grafana/`, so a fresh `docker compose up` brings them up populated. Any
+`.json` dropped into `infra/grafana/dashboards/` is picked up within 10 seconds.
+
 Sign in with any seeded username (`miahart2`, `miloquinn1685`, …). The password is
 accepted and ignored.
 
@@ -199,6 +276,7 @@ php artisan feeds:backfill --missing      # resume a partial backfill
 php artisan likes:flush                   # drain buffered likes
 php artisan engagement:flush              # drain buffered views/shares
 php artisan octane:reload                 # REQUIRED after editing routes/controllers
+php artisan feeds:backfill --missing      # resume a partial backfill (inboxes are not an id prefix)
 k6 run loadtest/skewed.js                 # also: baseline, stampede, avalanche
 ```
 
@@ -213,7 +291,8 @@ k6 run loadtest/skewed.js                 # also: baseline, stampede, avalanche
 app/      Laravel API
   Caching/        eviction policies + HotKeyDetector
   Console/        flush workers, feeds:backfill
-infra/    docker-compose (Postgres + 2× Redis)
+infra/    docker-compose (Postgres + 2x Redis + Prometheus + Grafana)
+  grafana/        provisioned datasource and dashboard, version-controlled
 loadtest/ k6 scenarios per lab
 web/      Next.js feed — all HTTP via a single gateway in lib/api/
 docs/     progress.md — the long-form lab notes these summaries come from
@@ -225,14 +304,13 @@ docs/     progress.md — the long-form lab notes these summaries come from
 
 Kept visible on purpose.
 
-- **Cold-path cache returns `__PHP_Incomplete_Class`.** The timeline caches an
-  `Illuminate\Support\Collection` against Laravel 13's `serializable_classes => false`,
-  so every cache _hit_ on that path returns an unusable payload. The frontend
-  tolerates it by holding the last good copy and retrying. Fix is one line:
-  cache plain arrays.
 - **LRU/LFU are not runtime-verified** (see Lab 4).
 - **Celebrity detection measures the wrong thing.** It checks how often a user
   _reads their own feed_, not how many followers they have.
+- **Hot keys never cool down.** `HotKeyDetector` short-circuits on an already-hot
+  key, so the counter stops incrementing and hotness is permanent by construction.
+- **`/api/metrics` emits no `# TYPE` headers**, so Prometheus treats every series as
+  untyped. `rate()` still works; Grafana just can't tell counters from gauges.
 - **Fanout is synchronous and unpipelined** — two Redis round trips per follower,
   inline in the request. Belongs on a queue.
 - **Sign-in is not authentication.** The password is discarded.
