@@ -242,10 +242,24 @@ class TimelineController extends Controller
 
         // No inbox yet (new account, or posts predating fanout): fall back.
         if (empty($fromFeed)) {
-            return $this->rowList($this->fetchTimeline($userId));
+            // return $this->rowList($this->fetchTimeline($userId));
+            return Cache::remember(
+                "timeline:{$userId}",
+                now()->addSeconds(60),
+                function () use ($userId) {
+                    return $this->fetchTimeline($userId)
+                        ->map(fn ($row) => (array) $row)
+                        ->all();
+                }
+            );
         }
 
-        $merged = array_merge($fromFeed, $this->celebrityPosts($userId));
+        $byId = [];
+        foreach(array_merge($fromFeed, $this->celebrityPosts($userId)) as $row) {
+            $byId[$row['id']] = $row;
+        }
+
+        $merged = array_values($byId);
 
         // created_at is "Y-m-d H:i:s", so a string compare is already
         // chronological - and unlike strtotime it cannot silently return false.
