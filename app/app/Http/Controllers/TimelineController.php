@@ -47,9 +47,7 @@ class TimelineController extends Controller
                 return $this->fetchTimeline($userId);
             });
         } else {
-            $tweets = Cache::remember($cacheKey, now()->addSeconds($ttl), function () use ($userId) {
-                return $this->fetchTimeline($userId);
-            });
+            $tweets = $this->getMergedFeed($userId);
         }
 
         // Cache-aside on a tiny profile row: one Redis GET instead of a DB hit per
@@ -223,5 +221,110 @@ class TimelineController extends Controller
         $value = $callback();
         Redis::connection('hot')->setEx($key, $ttl, json_encode($value));
         return $value;
+    }
+
+    /**
+     * The real fan-out-on-write read path: the pre-built inbox (fast, from
+     * regular follows) merged with a small query for any celebrities this user
+     * follows, who were deliberately never fanned out to.
+     */
+    private function getMergedFeed(int $userId): array
+    {
+        $feedItems = Redis::connection('default')->lRange("feed:{$userId}", 0, -1);
+
+        // Entries written before the lTrim fix are bare integers, not posts.
+        // One of them reaching the response invalidates the whole page client
+        // side, so anything that is not a post shape is dropped here.
+        $fromFeed = array_values(array_filter(
+            array_map(fn ($json) => json_decode($json, true), $feedItems),
+            fn ($row) => is_array($row) && isset($row['id'], $row['created_at'])
+        ));
+
+        // No inbox yet (new account, or posts predating fanout): fall back.
+        if (empty($fromFeed)) {
+            return $this->rowList($this->fetchTimeline($userId));
+        }
+
+        $merged = array_merge($fromFeed, $this->celebrityPosts($userId));
+
+        // created_at is "Y-m-d H:i:s", so a string compare is already
+        // chronological - and unlike strtotime it cannot silently return false.
+        usort($merged, function ($a, $b) {
+            return strcmp($b['created_at'], $a['created_at']) ?: ($b['id'] <=> $a['id']);
+        });
+
+        return array_slice($merged, 0, self::PAGE_SIZE);
+    }
+
+    /**
+     * Recent posts from the celebrities this user follows.
+     *
+     * Cached per viewer: without it every request re-queries the follow list and
+     * the posts, which is more database work than the plain join this read path
+     * was meant to avoid.
+     */
+    private function celebrityPosts(int $userId): array
+    {
+        return Cache::remember(
+            "celebfeed:{$userId}",
+            now()->addSeconds(30),
+            function () use ($userId) {
+                // One SMEMBERS for the whole hot set, rather than one SISMEMBER
+                // per followed account.
+                $hotIds = [];
+                foreach (Redis::connection('default')->sMembers('hot_keys') as $key) {
+                    if (str_starts_with($key, 'timeline:')) {
+                        $hotIds[] = (int) substr($key, strlen('timeline:'));
+                    }
+                }
+
+                if (empty($hotIds)) {
+                    return [];
+                }
+
+                // Let Postgres do the intersection instead of filtering in PHP.
+                $celebrityIds = DB::table('follows')
+                    ->where('follower_id', $userId)
+                    ->whereIn('followed_id', $hotIds)
+                    ->pluck('followed_id');
+
+                if ($celebrityIds->isEmpty()) {
+                    return [];
+                }
+
+                return DB::table('tweets')
+                    ->join('users', 'users.id', '=', 'tweets.user_id')
+                    ->leftJoin('likes', function ($join) use ($userId) {
+                        $join->on('likes.tweet_id', '=', 'tweets.id')
+                            ->where('likes.user_id', '=', $userId);
+                    })
+                    ->leftJoin('reposts', function ($join) use ($userId) {
+                        $join->on('reposts.tweet_id', '=', 'tweets.id')
+                            ->where('reposts.user_id', '=', $userId);
+                    })
+                    ->whereIn('tweets.user_id', $celebrityIds)
+                    ->whereNull('tweets.parent_tweet_id')
+                    ->orderByDesc('tweets.created_at')
+                    ->orderByDesc('tweets.id')
+                    ->limit(self::PAGE_SIZE)
+                    ->get([
+                        'tweets.id',
+                        'tweets.user_id',
+                        'users.name as author_name',
+                        'users.username as author_handle',
+                        'tweets.body',
+                        'tweets.like_count',
+                        'tweets.repost_count',
+                        'tweets.reply_count',
+                        'tweets.view_count',
+                        'tweets.share_count',
+                        'tweets.created_at',
+                        DB::raw('(likes.id IS NOT NULL) as liked_by_viewer'),
+                        DB::raw('(reposts.id IS NOT NULL) as reposted_by_viewer'),
+                    ])
+                    ->map(fn ($row) => (array) $row)
+                    ->all();
+            }
+        );
     }
 }

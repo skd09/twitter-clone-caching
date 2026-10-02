@@ -30,6 +30,12 @@ export function cursorFor(tweet: Tweet): string {
 }
 
 export type LikePayload = { tweet_id: number; like_count: number };
+export type CreatedTweetPayload = {
+  tweet_id: number;
+  /** False when the author was treated as a celebrity and fanout was skipped. */
+  fanned_out: boolean;
+  followers_notified: number | null;
+};
 export type RepostPayload = {
   tweet_id: number;
   repost_count: number;
@@ -173,6 +179,41 @@ export const api = {
   },
 
   tweets: {
+    /**
+     * POST /api/tweets -- create a post.
+     *
+     * Returns only ids and fanout bookkeeping, not the created row, so the
+     * caller composes the optimistic tweet itself from what it already knows.
+     */
+    async create(
+      userId: number,
+      body: string,
+      options?: Pick<RequestOptions, 'signal' | 'timeoutMs'>
+    ): Promise<ApiResult<CreatedTweetPayload>> {
+      const res = await request<{
+        tweet_id?: unknown;
+        fanned_out?: unknown;
+        followers_notified?: unknown;
+      }>('/api/tweets', { ...options, method: 'POST', body: { user_id: userId, body } });
+      if (!res.ok) return res;
+
+      if (typeof res.data.tweet_id !== 'number') {
+        return { ok: false, error: apiError('corrupt', 'Create response carried no tweet_id') };
+      }
+
+      return {
+        ok: true,
+        data: {
+          tweet_id: res.data.tweet_id,
+          fanned_out: res.data.fanned_out === true,
+          followers_notified:
+            typeof res.data.followers_notified === 'number'
+              ? res.data.followers_notified
+              : null,
+        },
+      };
+    },
+
     /**
      * POST /api/tweets/{id}/like -- write-through, returns the new count.
      *

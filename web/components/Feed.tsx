@@ -7,6 +7,7 @@ import TweetCard from '@/components/TweetCard';
 import RightRail from '@/components/RightRail';
 import StaleBanner from '@/components/StaleBanner';
 import NewPostsPill from '@/components/NewPostsPill';
+import ComposeBox from '@/components/ComposeBox';
 import type { Tweet, Viewer } from '@/lib/types';
 import { api, cursorFor } from '@/lib/api';
 import { readCachedTimeline, writeCachedTimeline } from '@/lib/timelineCache';
@@ -302,6 +303,38 @@ export default function Feed({ viewerId, signedInAs, onLogout }: Props) {
     [patchTweet, viewerId]
   );
 
+  function handlePost(body: string): Promise<boolean> {
+    return api.tweets.create(viewerId, body).then((result) => {
+      if (!result.ok) return false;
+
+      // The endpoint returns ids only, not the created row, and the author's own
+      // posts are not in their own timeline (nobody follows themselves), so the
+      // card is composed locally and prepended.
+      const author = viewer ?? signedInAs;
+      const optimistic: Tweet = {
+        id: result.data.tweet_id,
+        user_id: viewerId,
+        author_name: author.name,
+        author_handle: author.username,
+        body,
+        like_count: 0,
+        repost_count: 0,
+        reply_count: 0,
+        view_count: 0,
+        share_count: 0,
+        liked_by_viewer: false,
+        reposted_by_viewer: false,
+        // Backend stores UTC as "Y-m-d H:i:s"; match it so relative time agrees.
+        created_at: new Date().toISOString().slice(0, 19).replace('T', ' '),
+      };
+
+      // Already known locally, so the server flags must not re-seed it later.
+      seeded.current.add(optimistic.id);
+      setTweets((current) => mergeFeed(current, [optimistic]));
+      return true;
+    });
+  }
+
   function handleReply(tweetId: number, body: string): Promise<boolean> {
     return api.tweets.reply(tweetId, viewerId, body).then((result) => {
       if (!result.ok) return false;
@@ -363,6 +396,8 @@ export default function Feed({ viewerId, signedInAs, onLogout }: Props) {
             />
           </div>
         </div>
+
+        <ComposeBox author={viewer ?? signedInAs} onPost={handlePost} />
 
         <NewPostsPill count={pendingNew.length} onClick={showNewPosts} />
 

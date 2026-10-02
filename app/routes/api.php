@@ -25,6 +25,9 @@ Route::post('/tweets/{tweetId}/reply', [TweetEngagementController::class, 'reply
 // Write-behind (buffered in Redis, folded in by `php artisan engagement:flush`):
 Route::post('/tweets/{tweetId}/view', [TweetEngagementController::class, 'view']);
 Route::post('/tweets/{tweetId}/share', [TweetEngagementController::class, 'share']);
+// Fanout to followers (Postgres is the authority):
+// Celebrity fanout is skipped
+Route::post('/tweets', [TweetController::class, 'store']);
 
 // Demo sign-in: any seeded username, password ignored. Not real auth.
 Route::post('/auth/login', [AuthController::class, 'login']);
