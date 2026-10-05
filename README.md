@@ -111,7 +111,7 @@ matching how Redis approximates `allkeys-lfu`.
 
 ### Lab 5 — TTL jitter, and an honest negative result [`lab-5`](https://github.com/skd09/twitter-clone-caching/tree/lab-5)
 
-Fixed vs jittered TTL under 100 VUs against 5 keys, three runs each:
+Fixed vs jittered TTL under 100 VUs against 5 keys, two runs per variant:
 
 |              | p50   | p95   | Throughput |
 | ------------ | ----- | ----- | ---------- |
@@ -158,14 +158,36 @@ with a value that was already stale by the time it landed.
 
 ```
 before fix:  Postgres 187  ·  Redis 186   <- cache lies
-after fix:   Postgres 188  ·  Redis 188
+after fix:   the fix does not work — see below
 ```
 
-Fixed not with more locking, but by **versioning the data** — cache writes carry the
-row's `updated_at`, and `writeIfNewer()` refuses out-of-order writes.
+The intended fix was to **version the data**: cache writes carry the row's
+`updated_at`, and `writeIfNewer()` refuses any write whose version isn't strictly
+newer. Same principle as the `UNIQUE(user_id, tweet_id)` constraint and Redis's
+atomic `INCR` — push the guarantee into the data, not into the timing.
 
-> Same principle as the `UNIQUE(user_id, tweet_id)` constraint and Redis's atomic
-> `INCR`: push the guarantee into the data, not into the timing.
+**It doesn't work, and I can show you why.** The query builder's
+`DB::table()->increment()` does not touch `updated_at` (Eloquent's does; the query
+builder's doesn't). So the version never advances:
+
+```
+like 1: db=1  version=1791225536  -> cache write ACCEPTED, cache now=1
+like 2: db=2  version=1791225536  -> cache write REFUSED,  cache now=1
+                 ^ identical
+```
+
+The first write wins and every later one is rejected, so the fix makes staleness
+*permanent* rather than preventing it. My original rerun showed `188/188` and I read
+that as proof — but it only ever exercised one accepted write, which is exactly the
+case that passes either way.
+
+> Two lessons, and the second is the one I actually needed. A version is only a
+> version if something reliably advances it. And a test that passes for the wrong
+> reason is worse than no test: it stopped me looking.
+
+Not yet fixed. `tweet:{id}:likes` is written but never read — the timeline gets its
+counts from `TweetCounts` — so nothing user-facing is wrong today, which is also why
+this went unnoticed.
 
 ### Lab 8 — Hot/cold isolation at the infrastructure level [`lab-8`](https://github.com/skd09/twitter-clone-caching/tree/lab-8)
 
@@ -225,7 +247,12 @@ disagrees with the endpoint that just returned them.
 ### Lab 11 — Observability, and shrinking the inbox [`lab-11`](https://github.com/skd09/twitter-clone-caching/tree/lab-11)
 
 Every cache now reports hit and miss to Prometheus, scraped from `/api/metrics` and
-rendered in a provisioned Grafana dashboard. Under a 45-second mixed load:
+rendered in a provisioned Grafana dashboard.
+
+![Grafana dashboard under load](docs/img/grafana-dashboard.png)
+
+Captured at peak during a k6 run — 144,873 requests, 906 req/s, 80 VUs over 2m40s.
+Under a shorter 45-second mixed load:
 
 ```
 CACHE HIT RATE          LIKES (ops/s)              VIEWS (ops/s)
@@ -339,15 +366,45 @@ docs/     progress.md — the long-form lab notes these summaries come from
 
 ---
 
+## How this was built
+
+Built with AI coding assistants (Claude and Claude Code). I ran every load test and
+checked every result myself. Where something is unproven, it says so.
+
+## How I verified this
+
+- **Load numbers** — k6 scripts in `loadtest/`, run on one laptop. Read them as
+  trends and relative comparisons, not absolute throughput.
+- **Query counts** — a `Log::info` inside the database call, counted with `grep -c`.
+  Counting real executions rather than inferring them from latency is what made the
+  stampede visible.
+- **Cache state** — `redis-cli` against both instances, checking the actual keys.
+- **Dashboard** — Prometheus counters emitted by the app, rendered in Grafana.
+
+There is no automated test suite for the caching behaviour yet — `tests/` holds only
+the default Laravel stubs. Every check above is manual, which is precisely how the
+broken lab 7 fix survived: I verified it once, by hand, in the one scenario that
+passes whether or not the fix works.
+
 ## Known gaps
 
 Kept visible on purpose.
 
+- **The lab 7 stale-write fix does not work.** `DB::table()->increment()` never
+  advances `updated_at`, so the version is frozen and `writeIfNewer()` refuses every
+  write after the first. Demonstrated above. Harmless today only because the key it
+  guards is never read.
 - **LRU/LFU are not runtime-verified** (see Lab 4).
+- **Celebrity feeds are unverified under real load.** See the hot-key note below.
 - **Celebrity detection measures the wrong thing.** It checks how often a user
   _reads their own feed_, not how many followers they have.
-- **Hot keys never cool down.** `HotKeyDetector` short-circuits on an already-hot
-  key, so the counter stops incrementing and hotness is permanent by construction.
+- **Hot keys never cool down, and under load everyone becomes hot.** The threshold
+  is absolute (20 req/10s), not relative, so during a 906 req/s k6 run all ten users
+  in the test pool were flagged — including the ones chosen as cold. Since
+  `HotKeyDetector` short-circuits on an already-hot key, nothing ever clears the
+  flag. Net effect: under sustained load every post takes the celebrity path and
+  **fan-out-on-write stops running entirely**, which the dashboard shows as
+  `posts delivered 0.00/s` against `skipped_celebrity 5.23/s`.
 - **`/api/metrics` emits no `# TYPE` headers**, so Prometheus treats every series as
   untyped. `rate()` still works; Grafana just can't tell counters from gauges.
 - **Fanout is synchronous and unpipelined** — two Redis round trips per follower,
